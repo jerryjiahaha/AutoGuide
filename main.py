@@ -27,6 +27,7 @@ ASTROMETRY_WCS_RADEC_PATTERN = re.compile(r'Field center: \(RA,Dec\) = \((?P<RA>
 ASTROMETRY_WCS_ROTAT_PATTERN = re.compile(r'Field rotation angle: up is (?P<ROT>\S+?) degrees (?P<DIR>[ \w]{6})')
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--data", help="fits file dir path", default="~/image")
 parser.add_argument("--ra", help="RA FITS key name", default="RA")
 parser.add_argument("--dec", help="DEC FITS key name", default="DEC")
 parser.add_argument("--guide-threshold", 
@@ -227,7 +228,7 @@ def SendOffset(*, offset_ra_dec):
 
 
 def main():
-    data_queue = GetDataFITSFS("./tests")
+    data_queue = GetDataFITSFS(args.data)
     while True:
         try:
             data = data_queue.get()
