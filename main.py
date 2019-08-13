@@ -181,18 +181,20 @@ def CalcOffset(*, center_ra_dec: Tuple[float, float], **kwargs) -> Tuple[float, 
     center_ra_dec = np.array(center_ra_dec)
     if CalcOffsetRecorder is None:
         # Just a new guide process
+        _logger.info(f'new center {center_ra_dec}. last center: None (new guide process)')
         CalcOffsetRecorder = np.array([center_ra_dec,])
         return None
-    _logger.info(f"new center {center_ra_dec}, last center: {CalcOffsetRecorder[:4]}")
+    _logger.info(f"new center {center_ra_dec}, last center: {CalcOffsetRecorder[:16]}")
 
     offset = CalcOffsetRecorder[0] - center_ra_dec
     offset_distance = LA.norm(offset)
-#    _logger.debug(f"last_two_offset_distance: {last_two_offset_distance}")
-    if offset_distance > args.guide_threshold/3600:
-        _logger.warning(f"Guide offset is too large {offset_distance}(deg2), maybe a new object")
+    _logger.debug(f"offset between {CalcOffsetRecorder[0]} and {center_ra_dec}: {offset}, distance: {offset_distance}")
+    if offset_distance*3600 > args.guide_threshold:
+        _logger.warning(f"Guide offset is too large {offset_distance}(deg2) > {args.guide_threshold/3600}, maybe a new object")
         # We think telescope has changed the object, just reset guide process
         # TODO register a hook
-        CalcOffsetRecorder = center_ra_dec
+        _logger.info(f'new center {center_ra_dec}. last center: None (new guide process)')
+        CalcOffsetRecorder = np.array([center_ra_dec,])
         return None
     CalcOffsetRecorder = np.vstack((CalcOffsetRecorder, center_ra_dec))
     if len(CalcOffsetRecorder) > 65535:
@@ -220,7 +222,7 @@ def SendOffset(*, offset_ra_dec):
     # TODO handle timeout
     pv_offra = epics.PV('TELCSTAR2:Mount:Guide:OFFRA')
     pv_offdec = epics.PV('TELCSTAR2:Mount:Guide:OFFDEC')
-    pv_offset = epics.PV('TELCSTAR2:Mount:Guide:OFFSET')
+    pv_offset = epics.PV('TELCSTAR2:Mount:Guide')
     pv_offra.put(offra)
     pv_offdec.put(offdec)
     pv_offset.put(1)
@@ -229,6 +231,7 @@ def SendOffset(*, offset_ra_dec):
 
 def main():
     data_queue = GetDataFITSFS(args.data)
+    _logger.info('Started')
     while True:
         try:
             data = data_queue.get()
