@@ -31,7 +31,7 @@ parser.add_argument("--data", help="fits file dir path", default="~/image")
 parser.add_argument("--ra", help="RA FITS key name", default="RA")
 parser.add_argument("--dec", help="DEC FITS key name", default="DEC")
 parser.add_argument("--guide-threshold", 
-    default=100, type=float,
+    default=600, type=float,
     help="warning or start new guide if offset is larger than the shreshold, in arcsec",)
 
 args = None # will be filled in the main
@@ -181,19 +181,19 @@ def CalcOffset(*, center_ra_dec: Tuple[float, float], **kwargs) -> Tuple[float, 
     center_ra_dec = np.array(center_ra_dec)
     if CalcOffsetRecorder is None:
         # Just a new guide process
-        _logger.info(f'new center {center_ra_dec}. last center: None (new guide process)')
+        _logger.info(f'new center {center_ra_dec} deg. last center: None (new guide process)')
         CalcOffsetRecorder = np.array([center_ra_dec,])
         return None
-    _logger.info(f"new center {center_ra_dec}, last center: {CalcOffsetRecorder[:16]}")
+    _logger.info(f"new center {center_ra_dec} deg, last center: {CalcOffsetRecorder[:16]}")
 
-    offset = CalcOffsetRecorder[0] - center_ra_dec
+    offset = (CalcOffsetRecorder[0] - center_ra_dec) * 3600 # In arcsec
     offset_distance = LA.norm(offset)
     _logger.debug(f"offset between {CalcOffsetRecorder[0]} and {center_ra_dec}: {offset}, distance: {offset_distance}")
-    if offset_distance*3600 > args.guide_threshold:
-        _logger.warning(f"Guide offset is too large {offset_distance}(deg2) > {args.guide_threshold/3600}, maybe a new object")
+    if offset_distance > args.guide_threshold:
+        _logger.warning(f"Guide offset is too large {offset_distance}(sec) > {args.guide_threshold}, maybe a new object")
         # We think telescope has changed the object, just reset guide process
         # TODO register a hook
-        _logger.info(f'new center {center_ra_dec}. last center: None (new guide process)')
+        _logger.info(f'new center {center_ra_dec} deg. last center: None (new guide process)')
         CalcOffsetRecorder = np.array([center_ra_dec,])
         return None
     CalcOffsetRecorder = np.vstack((CalcOffsetRecorder, center_ra_dec))
@@ -218,7 +218,7 @@ def SendOffset(*, offset_ra_dec):
     # Send through teles
     # Send through epics
     import epics
-    _logger.debug(f'Will SendOffset {offra}, {offdec} via EPICS')
+    _logger.debug(f'Will SendOffset {offra}, {offdec} arcsec via EPICS')
     # TODO handle timeout
     pv_offra = epics.PV('TELCSTAR2:Mount:Guide:OFFRA')
     pv_offdec = epics.PV('TELCSTAR2:Mount:Guide:OFFDEC')
@@ -226,7 +226,7 @@ def SendOffset(*, offset_ra_dec):
     pv_offra.put(offra)
     pv_offdec.put(offdec)
     pv_offset.put(1)
-    _logger.info(f'SendOffset via EPICS done')
+    _logger.info(f'SendOffset {offra}, {offdec} arcsec via EPICS DONE')
 
 
 def main():
@@ -236,11 +236,10 @@ def main():
         try:
             data = data_queue.get()
             filepath = data['filepath']
-            print(filepath)
             proc_ret = AnalysePosition(filepath)
             _logger.info(proc_ret)
             offset = CalcOffset(**proc_ret)
-            _logger.info(f"offset: {offset}")
+            _logger.info(f"filename: {filepath}, offset: {offset} arcsec")
             SendOffset(offset_ra_dec=offset)
         except Exception as e:
             import traceback
