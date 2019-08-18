@@ -12,15 +12,19 @@ from queue import Queue
 import subprocess
 import re
 import logging
+import sys
 import argparse
+import json
 from datetime import datetime
 from typing import (
     Tuple,
 )
 
+import dateutil.parser
 import numpy as np
 from numpy import linalg as LA
 
+import lst
 #import pyles
 
 ASTROMETRY_WCS_RADEC_PATTERN = re.compile(r'Field center: \(RA,Dec\) = \((?P<RA>\S+?), (?P<DEC>\S+?)\) deg')
@@ -33,6 +37,7 @@ parser.add_argument("--dec", help="DEC FITS key name", default="DEC")
 parser.add_argument("--guide-threshold", 
     default=600, type=float,
     help="warning or start new guide if offset is larger than the shreshold, in arcsec",)
+parser.add_argument("--guide", action="store_true", default=False, help="send guide offset to telescope")
 
 args = None # will be filled in the main
 
@@ -144,7 +149,7 @@ def AnalysePosition(fpath: str, output_prefix = None, start_x=0, size_x=None, st
     wcs_center_radec = wcs_center_radec_res.groupdict()
     wcs_rotate_dir_res = ASTROMETRY_WCS_ROTAT_PATTERN.search(task_result.stdout.decode())
     wcs_rotate_dir = wcs_rotate_dir_res.groupdict()
-    print(wcs_rotate_dir)
+    _logger.debug(f'wcs_rotate_dir: {wcs_rotate_dir}')
 
     ra = float(wcs_center_radec['RA'])
     dec = float(wcs_center_radec['DEC'])
@@ -152,21 +157,41 @@ def AnalysePosition(fpath: str, output_prefix = None, start_x=0, size_x=None, st
     direction = wcs_rotate_dir['DIR']
     wcs_file = str(output_dir.resolve().joinpath(fpath.stem)) + '.wcs'
     wcsinfo = wcs.WCS(fits.open(wcs_file)[0])
+    XY_ref = np.array(fitshdu.shape)/2
+    RD_ref = wcsinfo.all_pix2world([XY_ref], 1)
+
+    #RD_ref2 = wcsinfo.all_pix2world([np.array([521, 538])], 1)
+    RD_ref2 = wcsinfo.all_pix2world([np.array([538, 521])], 1)
+    RD_ref3 = wcsinfo.all_pix2world([np.array([XY_ref[1], XY_ref[0]])], 1)
+    _logger.debug(f'RD_ref: {RD_ref}')
+    _logger.debug(f'RD_ref2: {RD_ref2}')
+    _logger.debug(f'RD_ref3: {RD_ref3}')
+    
     date_obs = fitshdr.get('DATE-OBS')
     if date_obs is None:
         date_obs = datetime.now()
     else:
-        date_obs = datetime.fromisoformat(date_obs)
+        date_obs = dateutil.parser.parse(date_obs)
+#        date_obs = datetime.fromisoformat(date_obs)
 
     res = {
         'rotate_angle': rot,
         'rotate_angle_dir': direction,
-        'wcsinfo': wcsinfo,
+        'wcsinfo': wcsinfo.to_header_string().strip(),
         'center_ra_dec': (ra, dec),
-        'output_dir': output_dir.resolve(),
-        'filename': fpath,
-        'date-obs': date_obs,
-        'exposure': fitshdr.get('EXPOTIME', 0)
+        'wcs_img_ref': list(RD_ref[0]),
+        'wcs_img_ref2': list(RD_ref2[0]),
+        'wcs_img_ref3': list(RD_ref3[0]),
+        'output_dir': str(output_dir.resolve()),
+        'filename': str(fpath),
+        'date-obs': date_obs.isoformat(),
+        'LST': lst.GetLST.GL(date_obs.strftime('%Y/%m/%d %H:%M:%S.%f')),
+        'exposure': fitshdr.get('EXPOTIME', 0),
+        'HA': fitshdr.get('HA'),
+        'DEC': fitshdr.get('DEC'),
+        'TAR_RA': fitshdr.get('TAR_RA'),
+        'TAR_DEC': fitshdr.get('TAR_DEC'),
+        'shape': fitshdu.shape
     }
 
     return res
@@ -178,7 +203,9 @@ def CalcOffset(*, center_ra_dec: Tuple[float, float], **kwargs) -> Tuple[float, 
     Return offset in (ra, dec)
     """
     global CalcOffsetRecorder
-    center_ra_dec = np.array(center_ra_dec)
+#    center_ra_dec = np.array(center_ra_dec)
+    # XXX Try to use wcs ref instead of center returned by astrometry.net
+    center_ra_dec = kwargs['wcs_img_ref']
     if CalcOffsetRecorder is None:
         # Just a new guide process
         _logger.info(f'new center {center_ra_dec} deg. last center: None (new guide process)')
@@ -223,30 +250,44 @@ def SendOffset(*, offset_ra_dec):
     pv_offra = epics.PV('TELCSTAR2:Mount:Guide:OFFRA')
     pv_offdec = epics.PV('TELCSTAR2:Mount:Guide:OFFDEC')
     pv_offset = epics.PV('TELCSTAR2:Mount:Guide')
-    pv_offra.put(offra)
+    pv_offra.put(-offra)
     pv_offdec.put(offdec)
     pv_offset.put(1)
     _logger.info(f'SendOffset {offra}, {offdec} arcsec via EPICS DONE')
 
+#def CalcCenter():
+#    import numpy as np
+#    from astropy.wcs import WCS
+#    
+#    hdl = fits.open(FITS)
+#    prihdr = fits.getheader(FITS, ext=0)
+#    w = WCS(prihdr, hdl)
+#    XY_ref = np.array([[x_cen, y_cen]])
+#    RD_ref = w.all_pix2world(XY_ref, 1)
+#    print(RD_ref[0])
+
 
 def main():
-    data_queue = GetDataFITSFS(args.data)
     _logger.info('Started')
+    print(args)
+    data_queue = GetDataFITSFS(args.data)
     while True:
         try:
             data = data_queue.get()
             filepath = data['filepath']
             proc_ret = AnalysePosition(filepath)
-            _logger.info(proc_ret)
+            _logger.info(f"ANALYSED: {json.dumps(proc_ret)}")
             offset = CalcOffset(**proc_ret)
             _logger.info(f"filename: {filepath}, offset: {offset} arcsec")
-            SendOffset(offset_ra_dec=offset)
+            if args.guide:
+                SendOffset(offset_ra_dec=offset)
         except Exception as e:
             import traceback
             _logger.error(e)
             _logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
+
     args = parser.parse_args()
     try:
         loop = asyncio.get_event_loop()
